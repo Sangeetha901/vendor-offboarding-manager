@@ -7,13 +7,28 @@ import re
 import logging
 
 ai_bp = Blueprint("ai", __name__)
-
-# Day 10: In-memory history storage
 history = []
 
 
+# ---------- COMMON HELPERS ----------
 def current_time():
     return datetime.now(timezone.utc).isoformat()
+
+
+def success(data):
+    return jsonify({
+        "success": True,
+        "data": data,
+        "timestamp": current_time()
+    })
+
+
+def error(msg, code=400):
+    return jsonify({
+        "success": False,
+        "error": msg,
+        "timestamp": current_time()
+    }), code
 
 
 def extract_json_array(text):
@@ -32,206 +47,189 @@ def extract_json_array(text):
     return None
 
 
+# ---------- DESCRIBE ----------
 @ai_bp.route("/describe", methods=["POST"])
 def describe():
     logging.info("Describe API called")
 
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    if not data:
-        return jsonify({"success": False, "error": "No input provided"}), 400
+        if not data:
+            return error("No input provided")
 
-    user_input = data.get("input")
+        user_input = data.get("input")
 
-    if not user_input:
-        return jsonify({"success": False, "error": "Input is required"}), 400
+        if not user_input:
+            return error("Input is required")
 
-    user_input = sanitize_input(user_input)
+        user_input = sanitize_input(user_input)
 
-    if is_prompt_injection(user_input):
-        return jsonify({"success": False, "error": "Malicious input detected"}), 400
+        if is_prompt_injection(user_input):
+            return error("Malicious input detected")
 
-    prompt = f"""
-You are an AI assistant for vendor offboarding.
+        prompt = f"""
+Generate a professional vendor offboarding explanation.
 
-Given the vendor details below, generate a clear, professional, and concise description explaining why the vendor should be offboarded.
-
-Focus on:
-- Risks
+Include:
+- Reason
+- Risk summary
 - Business impact
-- Reason for offboarding
 
-Vendor Details:
+Vendor:
 {user_input}
-
-Return only the description in a professional tone.
 """
 
-    result = get_ai_response(prompt)
+        result = get_ai_response(prompt)
 
-    if "error" in result:
-        return jsonify({
-            "success": False,
-            "description": "",
-            "error": result["error"],
-            "generated_at": current_time()
-        }), 500
+        if "error" in result:
+            return error(result["error"], 500)
 
-    history.append({
-        "type": "describe",
-        "input": user_input,
-        "timestamp": current_time()
-    })
+        history.append({
+            "type": "describe",
+            "input": user_input,
+            "timestamp": current_time()
+        })
 
-    return jsonify({
-        "success": True,
-        "description": result.get("response", ""),
-        "generated_at": current_time()
-    })
+        return success({
+            "description": result.get("response", "")
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
 
 
+# ---------- RECOMMEND ----------
 @ai_bp.route("/recommend", methods=["POST"])
 def recommend():
     logging.info("Recommend API called")
 
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    if not data:
-        return jsonify({"success": False, "error": "No input provided"}), 400
+        if not data:
+            return error("No input provided")
 
-    user_input = data.get("input")
+        user_input = data.get("input")
 
-    if not user_input:
-        return jsonify({"success": False, "error": "Input is required"}), 400
+        if not user_input:
+            return error("Input is required")
 
-    user_input = sanitize_input(user_input)
+        user_input = sanitize_input(user_input)
 
-    if is_prompt_injection(user_input):
-        return jsonify({"success": False, "error": "Malicious input detected"}), 400
+        if is_prompt_injection(user_input):
+            return error("Malicious input detected")
 
-    prompt = f"""
-You are an AI assistant for vendor offboarding.
+        prompt = f"""
+Return 3 vendor offboarding recommendations in JSON format.
 
-Return exactly 3 recommendations as a VALID JSON ARRAY.
-
-STRICT RULES:
-- Only JSON
+Rules:
+- Only JSON array
 - No explanation
-- No markdown
-- No extra text
-- Each item must have: action_type, description, priority
-- Priority must be: High, Medium, or Low
+- Fields: action_type, description, priority
+- Priority: High/Medium/Low
 
-Vendor Details:
+Vendor:
 {user_input}
 """
 
-    result = get_ai_response(prompt)
+        result = get_ai_response(prompt)
 
-    if "error" in result:
-        return jsonify({
-            "success": False,
-            "recommendations": [],
-            "is_fallback": True,
-            "error": result["error"],
-            "generated_at": current_time()
-        }), 500
+        if "error" in result:
+            return error(result["error"], 500)
 
-    raw_text = result.get("response", "").strip()
-    recommendations = extract_json_array(raw_text)
+        recs = extract_json_array(result.get("response", ""))
 
-    if not recommendations or not isinstance(recommendations, list):
-        return jsonify({
-            "success": True,
-            "recommendations": [],
-            "generated_at": current_time(),
-            "is_fallback": True,
-            "raw_response": raw_text
+        if not recs:
+            return success({
+                "recommendations": [],
+                "is_fallback": True
+            })
+
+        history.append({
+            "type": "recommend",
+            "input": user_input,
+            "timestamp": current_time()
         })
 
-    recommendations = recommendations[:3]
+        return success({
+            "recommendations": recs[:3],
+            "is_fallback": False
+        })
 
-    history.append({
-        "type": "recommend",
-        "input": user_input,
-        "timestamp": current_time()
-    })
-
-    return jsonify({
-        "success": True,
-        "recommendations": recommendations,
-        "generated_at": current_time(),
-        "is_fallback": False
-    })
+    except Exception as e:
+        return error(str(e), 500)
 
 
+# ---------- GENERATE REPORT ----------
 @ai_bp.route("/generate-report", methods=["POST"])
 def generate_report():
     logging.info("Generate Report API called")
 
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    if not data:
-        return jsonify({"success": False, "error": "No input provided"}), 400
+        if not data:
+            return error("No input provided")
 
-    user_input = data.get("input")
+        user_input = data.get("input")
 
-    if not user_input:
-        return jsonify({"success": False, "error": "Input is required"}), 400
+        if not user_input:
+            return error("Input is required")
 
-    user_input = sanitize_input(user_input)
+        user_input = sanitize_input(user_input)
 
-    if is_prompt_injection(user_input):
-        return jsonify({"success": False, "error": "Malicious input detected"}), 400
+        if is_prompt_injection(user_input):
+            return error("Malicious input detected")
 
-    prompt = f"""
-You are an AI assistant.
+        prompt = f"""
+Generate structured vendor offboarding report:
 
-Generate a structured vendor offboarding report.
+1. Offboarding Reason
+2. Risk Summary
+3. Business Impact
+4. Recommended Actions
 
-Format strictly:
-
-1. Offboarding Reason:
-2. Risk Summary:
-3. Business Impact:
-4. Recommended Actions:
-
-Vendor Details:
+Vendor:
 {user_input}
-
-Return clean professional text.
 """
 
-    result = get_ai_response(prompt)
+        result = get_ai_response(prompt)
 
-    if "error" in result:
-        return jsonify({
-            "success": False,
-            "report": "",
-            "error": result["error"],
-            "generated_at": current_time()
-        }), 500
+        if "error" in result:
+            return error(result["error"], 500)
 
-    history.append({
-        "type": "generate-report",
-        "input": user_input,
-        "timestamp": current_time()
-    })
+        history.append({
+            "type": "generate-report",
+            "input": user_input,
+            "timestamp": current_time()
+        })
 
-    return jsonify({
-        "success": True,
-        "report": result.get("response", ""),
-        "generated_at": current_time()
-    })
+        return success({
+            "report": result.get("response", "")
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
 
 
+# ---------- HISTORY (WITH PAGINATION) ----------
 @ai_bp.route("/history", methods=["GET"])
 def get_history():
     logging.info("History API called")
 
-    return jsonify({
-        "success": True,
-        "history": history,
-        "count": len(history),
-        "timestamp": current_time()
-    })
+    try:
+        limit = int(request.args.get("limit", 5))
+        offset = int(request.args.get("offset", 0))
+
+        sliced = history[offset:offset + limit]
+
+        return success({
+            "history": sliced,
+            "count": len(history),
+            "limit": limit,
+            "offset": offset
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
