@@ -7,10 +7,11 @@ import re
 import logging
 
 ai_bp = Blueprint("ai", __name__)
+
 history = []
 
 
-# ---------- COMMON HELPERS ----------
+# ---------- HELPERS ----------
 def current_time():
     return datetime.now(timezone.utc).isoformat()
 
@@ -47,6 +48,14 @@ def extract_json_array(text):
     return None
 
 
+def add_history(api_type, user_input):
+    history.append({
+        "type": api_type,
+        "input": user_input,
+        "timestamp": current_time()
+    })
+
+
 # ---------- DESCRIBE ----------
 @ai_bp.route("/describe", methods=["POST"])
 def describe():
@@ -69,12 +78,7 @@ def describe():
             return error("Malicious input detected")
 
         prompt = f"""
-Generate a professional vendor offboarding explanation.
-
-Include:
-- Reason
-- Risk summary
-- Business impact
+Generate professional vendor offboarding explanation.
 
 Vendor:
 {user_input}
@@ -85,11 +89,7 @@ Vendor:
         if "error" in result:
             return error(result["error"], 500)
 
-        history.append({
-            "type": "describe",
-            "input": user_input,
-            "timestamp": current_time()
-        })
+        add_history("describe", user_input)
 
         return success({
             "description": result.get("response", "")
@@ -121,13 +121,7 @@ def recommend():
             return error("Malicious input detected")
 
         prompt = f"""
-Return 3 vendor offboarding recommendations in JSON format.
-
-Rules:
-- Only JSON array
-- No explanation
-- Fields: action_type, description, priority
-- Priority: High/Medium/Low
+Return 3 recommendations as JSON.
 
 Vendor:
 {user_input}
@@ -146,11 +140,7 @@ Vendor:
                 "is_fallback": True
             })
 
-        history.append({
-            "type": "recommend",
-            "input": user_input,
-            "timestamp": current_time()
-        })
+        add_history("recommend", user_input)
 
         return success({
             "recommendations": recs[:3],
@@ -183,12 +173,13 @@ def generate_report():
             return error("Malicious input detected")
 
         prompt = f"""
-Generate structured vendor offboarding report:
+Generate structured vendor offboarding report.
 
-1. Offboarding Reason
-2. Risk Summary
+Sections:
+1. Reason
+2. Risks
 3. Business Impact
-4. Recommended Actions
+4. Recommendations
 
 Vendor:
 {user_input}
@@ -199,25 +190,52 @@ Vendor:
         if "error" in result:
             return error(result["error"], 500)
 
-        history.append({
-            "type": "generate-report",
-            "input": user_input,
-            "timestamp": current_time()
-        })
+        report = result.get("response", "")
+
+        add_history("generate-report", user_input)
 
         return success({
-            "report": result.get("response", "")
+            "report": report
         })
 
     except Exception as e:
         return error(str(e), 500)
 
 
-# ---------- HISTORY (WITH PAGINATION) ----------
+# ---------- EXPORT REPORT ----------
+@ai_bp.route("/export-report", methods=["POST"])
+def export_report():
+    logging.info("Export Report API called")
+
+    try:
+        data = request.get_json()
+
+        if not data:
+            return error("No input provided")
+
+        report = data.get("report")
+
+        if not report:
+            return error("Report is required")
+
+        exported_text = f"""
+VENDOR OFFBOARDING REPORT
+Generated At: {current_time()}
+
+{report}
+"""
+
+        return success({
+            "exported_report": exported_text
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
+
+
+# ---------- HISTORY ----------
 @ai_bp.route("/history", methods=["GET"])
 def get_history():
-    logging.info("History API called")
-
     try:
         limit = int(request.args.get("limit", 5))
         offset = int(request.args.get("offset", 0))
@@ -229,6 +247,59 @@ def get_history():
             "count": len(history),
             "limit": limit,
             "offset": offset
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
+
+
+# ---------- SEARCH HISTORY ----------
+@ai_bp.route("/search-history", methods=["GET"])
+def search_history():
+    try:
+        keyword = request.args.get("keyword", "").lower()
+
+        results = [
+            item for item in history
+            if keyword in item["input"].lower()
+        ]
+
+        return success({
+            "results": results,
+            "count": len(results)
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
+
+
+# ---------- CLEAR HISTORY ----------
+@ai_bp.route("/clear-history", methods=["DELETE"])
+def clear_history():
+    try:
+        history.clear()
+
+        return success({
+            "message": "History cleared successfully"
+        })
+
+    except Exception as e:
+        return error(str(e), 500)
+
+
+# ---------- STATS ----------
+@ai_bp.route("/stats", methods=["GET"])
+def stats():
+    try:
+        describe_count = len([x for x in history if x["type"] == "describe"])
+        recommend_count = len([x for x in history if x["type"] == "recommend"])
+        report_count = len([x for x in history if x["type"] == "generate-report"])
+
+        return success({
+            "total_requests": len(history),
+            "describe_requests": describe_count,
+            "recommend_requests": recommend_count,
+            "report_requests": report_count
         })
 
     except Exception as e:
